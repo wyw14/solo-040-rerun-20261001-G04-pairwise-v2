@@ -22,6 +22,13 @@ const (
 	EventEmergencyStarted EventType = "emergency.started"
 	EventEmergencySettled EventType = "emergency.settled"
 	EventReplayWarning    EventType = "replay.warning"
+
+	EventLockoutRequested      EventType = "lockout.requested"
+	EventLockoutApproved       EventType = "lockout.approved"
+	EventLockoutReleaseRequest EventType = "lockout.release_requested"
+	EventLockoutReleased       EventType = "lockout.released"
+	EventLockoutRejected       EventType = "lockout.rejected"
+	EventLockoutDenied         EventType = "lockout.denied"
 )
 
 type Event struct {

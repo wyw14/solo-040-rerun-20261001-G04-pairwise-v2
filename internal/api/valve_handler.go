@@ -5,6 +5,7 @@ import (
 	"net/http"
 
 	"github.com/go-chi/chi/v5"
+	"github.com/wyw14/cry-96/internal/maintenance"
 )
 
 type rampInput struct {
@@ -30,6 +31,11 @@ func valveRampHandler(runtime *Runtime) http.HandlerFunc {
 		}
 		result, err := runtime.Hydraulics.RampTo(r.Context(), cycleValue, input.Targets)
 		if err != nil {
+			var locked *maintenance.LockedError
+			if errors.As(err, &locked) {
+				writeError(w, http.StatusLocked, err)
+				return
+			}
 			writeError(w, http.StatusRequestTimeout, err)
 			return
 		}

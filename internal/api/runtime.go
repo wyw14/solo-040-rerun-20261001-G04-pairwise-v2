@@ -11,6 +11,7 @@ import (
 	"github.com/wyw14/cry-96/internal/interlock"
 	"github.com/wyw14/cry-96/internal/journal"
 	"github.com/wyw14/cry-96/internal/lease"
+	"github.com/wyw14/cry-96/internal/maintenance"
 	"github.com/wyw14/cry-96/internal/model"
 	"github.com/wyw14/cry-96/internal/monitor"
 	"github.com/wyw14/cry-96/internal/safety"
@@ -39,6 +40,7 @@ type Runtime struct {
 	Leases          *lease.Service
 	LeaseSweeper    *lease.Sweeper
 	Safety          *safety.Service
+	Lockouts        *maintenance.Registry
 	Snapshot        *monitor.Snapshot
 	Incidents       *monitor.IncidentReview
 	Health          *monitor.HealthRegistry
@@ -54,6 +56,7 @@ func NewRuntime(ctx context.Context, dataDirectory string) (*Runtime, error) {
 		return nil, err
 	}
 	recorder := journal.NewRecorder(store, now)
+	lockouts := maintenance.NewRegistry(recorder, now)
 	chambers := []string{"chamber-1", "chamber-2"}
 	gateState := gate.NewState(chambers...)
 	gateCommands := gate.NewCommands()
@@ -70,7 +73,7 @@ func NewRuntime(ctx context.Context, dataDirectory string) (*Runtime, error) {
 	planner := schedule.NewPlanner(admissionService, recorder, now)
 	scheduleService := schedule.NewService(planner, signalPublisher)
 	ramp := hydraulics.NewRamp(25*time.Millisecond, now)
-	hydraulicsController := hydraulics.NewController(gateCommands, recorder, ramp, now)
+	hydraulicsController := hydraulics.NewController(gateCommands, recorder, ramp, lockouts, now)
 	barrier := safety.NewBarrier()
 	var safetyCoordinator *safety.Coordinator
 	levelByChamber := func(chamberID string) float64 {
@@ -84,13 +87,21 @@ func NewRuntime(ctx context.Context, dataDirectory string) (*Runtime, error) {
 		return safetyCoordinator != nil && safetyCoordinator.Active(chamberID)
 	}
 	interlockCoordinator := interlock.NewCoordinator(
-		interlock.DefaultPolicy(), interlock.NewArbiter(), gateController,
+		interlock.DefaultPolicy(), interlock.NewArbiter(), gateController, lockouts,
 		levelByChamber, emergencyActive,
 	)
 	cycleCoordinator := cycle.NewCoordinator(gateController, hydraulicsController, recorder, now)
 	cycleService := cycle.NewService(cycleCoordinator, admissionService)
 	safetyCoordinator = safety.NewCoordinator(gateCommands, barrier, recorder, now)
 	safetyService := safety.NewService(safetyCoordinator, cycleCoordinator)
+	lockouts.BindSafetyChecks(
+		emergencyActive,
+		gateCommands.PendingForDevices,
+		gateCommands.CancelDevices,
+	)
+	if err := maintenance.RestoreFromStore(ctx, lockouts, store); err != nil {
+		return nil, err
+	}
 	signalService.BindTransitLookup(cycleCoordinator)
 	replayer := journal.NewReplayer(store)
 	recovery := cycle.NewRecovery(replayer, cycleCoordinator)
@@ -114,7 +125,8 @@ func NewRuntime(ctx context.Context, dataDirectory string) (*Runtime, error) {
 		Planner: planner, Schedule: scheduleService, Hydraulics: hydraulicsController,
 		Interlocks: interlockCoordinator, Cycles: cycleCoordinator, CycleService: cycleService,
 		Leases: leaseService, LeaseSweeper: leaseSweeper, Safety: safetyService,
-		Snapshot:  monitor.NewSnapshot(cycleCoordinator, gateState, admissionService, signalService, safetyService, now),
+		Lockouts:  lockouts,
+		Snapshot:  monitor.NewSnapshot(cycleCoordinator, gateState, admissionService, signalService, safetyService, lockouts, now),
 		Incidents: monitor.NewIncidentReview(store), Health: health, Recovery: recovery,
 		Chambers: chambers, Now: now,
 	}, nil

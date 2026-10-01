@@ -64,6 +64,18 @@ func incidentMeaning(kind model.EventType) (string, string, bool) {
 		return "warning", "Recovery sequence requires review", true
 	case model.EventPlanCancelled:
 		return "notice", "Convoy plan cancelled and compensated", true
+	case model.EventLockoutRequested:
+		return "notice", "Maintenance lockout registered, awaiting approval", true
+	case model.EventLockoutApproved:
+		return "warning", "Maintenance lockout approved: equipment commands blocked", true
+	case model.EventLockoutReleaseRequest:
+		return "notice", "Maintenance lockout release requested, safety checks pending", true
+	case model.EventLockoutReleased:
+		return "notice", "Maintenance lockout released after safety checks", true
+	case model.EventLockoutRejected:
+		return "notice", "Maintenance lockout registration rejected", true
+	case model.EventLockoutDenied:
+		return "warning", "Gate or valve command refused by maintenance lockout", true
 	default:
 		return "", "", false
 	}

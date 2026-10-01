@@ -6,6 +6,7 @@ import (
 
 	"github.com/go-chi/chi/v5"
 	"github.com/google/uuid"
+	"github.com/wyw14/cry-96/internal/maintenance"
 	"github.com/wyw14/cry-96/internal/model"
 )
 
@@ -19,11 +20,21 @@ func openGateHandler(runtime *Runtime) http.HandlerFunc {
 		}
 		command, err := runtime.Interlocks.RequestOpen(r.Context(), mustCurrent(runtime, chamberID), direction, "http:"+requestID(r.Context()))
 		if err != nil {
-			writeError(w, http.StatusConflict, err)
+			writeCommandError(w, err)
 			return
 		}
 		writeJSON(w, http.StatusAccepted, command)
 	}
+}
+
+// writeCommandError surfaces maintenance lockouts as 423, other conflicts as 409.
+func writeCommandError(w http.ResponseWriter, err error) {
+	var locked *maintenance.LockedError
+	if errors.As(err, &locked) {
+		writeError(w, http.StatusLocked, err)
+		return
+	}
+	writeError(w, http.StatusConflict, err)
 }
 
 func mustCurrent(runtime *Runtime, chamberID string) model.TransitCycle {

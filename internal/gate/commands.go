@@ -116,6 +116,50 @@ func (c *Commands) Pending(chamberID string) []model.DeviceCommand {
 	return pending
 }
 
+// PendingForDevices returns non-terminal commands addressed to the given devices.
+func (c *Commands) PendingForDevices(chamberID string, devices []model.DeviceKind) []model.DeviceCommand {
+	wanted := deviceSet(devices)
+	c.mu.RLock()
+	defer c.mu.RUnlock()
+	var pending []model.DeviceCommand
+	for _, commandID := range c.byChamber[chamberID] {
+		command := c.byID[commandID]
+		_, covered := wanted[command.Device]
+		if !command.State.Terminal() && covered {
+			pending = append(pending, command)
+		}
+	}
+	return pending
+}
+
+// CancelDevices cancels non-terminal commands for the named devices and returns them.
+func (c *Commands) CancelDevices(chamberID string, devices []model.DeviceKind, now time.Time) []model.DeviceCommand {
+	wanted := deviceSet(devices)
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	var cancelled []model.DeviceCommand
+	for _, commandID := range c.byChamber[chamberID] {
+		command := c.byID[commandID]
+		_, covered := wanted[command.Device]
+		if command.State.Terminal() || !covered {
+			continue
+		}
+		if command.SetState(model.CommandCancelled, now) == nil {
+			c.byID[commandID] = command
+			cancelled = append(cancelled, command)
+		}
+	}
+	return cancelled
+}
+
+func deviceSet(devices []model.DeviceKind) map[model.DeviceKind]struct{} {
+	result := make(map[model.DeviceKind]struct{}, len(devices))
+	for _, device := range devices {
+		result[device] = struct{}{}
+	}
+	return result
+}
+
 func (c *Commands) Get(commandID uuid.UUID) (model.DeviceCommand, bool) {
 	c.mu.RLock()
 	command, ok := c.byID[commandID]

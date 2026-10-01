@@ -1,10 +1,53 @@
 <!doctype html>
 <html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>LockFlow Interlocks</title><link rel="stylesheet" href="/assets/styles.css"></head>
 <body><header><div class="brand"><span class="brand-mark">LF</span>LockFlow</div><nav><a href="/operations">Operations</a><a href="/chamber">Chamber</a><a aria-current="page" href="/interlocks">Interlocks</a><a href="/incidents">Incidents</a></nav></header>
-<main><div class="page-title"><div><h1>Interlock control</h1><div class="muted">Mutual exclusion and emergency equipment state</div></div></div><div class="grid" id="interlock-grid"></div><div class="message" id="message"></div></main>
+<main><div class="page-title"><div><h1>Interlock control</h1><div class="muted">Formal maintenance lockouts, mutual exclusion and emergency equipment state</div></div></div><div class="grid" id="interlock-grid"></div><div class="message" id="message"></div></main>
 <script src="/assets/app.js"></script><script>
-const {api,setMessage,withBusy}=window.LockFlow; const host=document.querySelector('#interlock-grid'); const message=document.querySelector('#message');
+const {api,setMessage,withBusy}=window.LockFlow;
+const host=document.querySelector('#interlock-grid'); const message=document.querySelector('#message');
+const DEVICES=[['upstream_gate','Upstream gate'],['downstream_gate','Downstream gate'],['fill_valve','Fill valve'],['drain_valve','Drain valve']];
+const esc=(v)=>String(v??'').replace(/[&<>"]/g,(c)=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]));
 async function stop(chamber,button){await withBusy(button,async()=>{try{await api(`/api/chambers/${chamber}/emergency`,{method:'POST',body:'{}'});await load();}catch(e){setMessage(message,e.message);}});}
-async function load(){const data=await api('/api/interlocks');host.innerHTML=Object.entries(data).map(([id,item])=>`<section class="panel"><h2>${id}</h2><table><tr><th>Emergency</th><td>${item.emergency.status}</td></tr><tr><th>Level</th><td>${item.equipment.LevelM??item.equipment.level_m??0} m</td></tr><tr><th>Pending commands</th><td>${item.pending_commands.length}</td></tr></table><button class="danger" data-stop="${id}">Emergency stop</button></section>`).join('');host.querySelectorAll('[data-stop]').forEach((button)=>button.addEventListener('click',()=>stop(button.dataset.stop,button)));}
+async function register(chamber,form,button){
+  const devices=DEVICES.map((d)=>d[0]).filter((d)=>form.querySelector(`[data-device="${d}"]`).checked);
+  const body={devices,reason:form.querySelector('[data-reason]').value.trim(),registered_by:form.querySelector('[data-name]').value.trim()};
+  await withBusy(button,async()=>{try{
+    if(!body.reason||!body.registered_by)throw new Error('reason and your name are required');
+    await api(`/api/chambers/${chamber}/lockouts`,{method:'POST',body:JSON.stringify(body)});form.querySelector('[data-reason]').value='';await load();
+  }catch(e){setMessage(message,e.message);}});
+}
+async function act(chamber,id,path,payload,button){await withBusy(button,async()=>{try{await api(`/api/chambers/${chamber}/lockouts/${id}/${path}`,{method:'POST',body:JSON.stringify(payload)});await load();}catch(e){setMessage(message,e.message);}});}
+function lockoutRow(chamber,item){
+  return item.lockouts.map((l)=>{
+    const buttons=[];
+    if(l.status==='pending'){buttons.push(`<button data-approve="${l.id}">Approve</button><button class="danger" data-reject="${l.id}">Reject</button>`);}
+    if(l.status==='active'){buttons.push(`<button data-release-request="${l.id}">Request release</button>`);}
+    if(l.status==='active'||l.status==='release_pending'){buttons.push(`<button data-release="${l.id}">Release (safety checked)</button>`);}
+    return `<tr><td><span class="status ${l.status==='active'?'critical':'warning'}">${l.status}</span></td><td>${l.devices.map(esc).join('<br>')}</td><td>${esc(l.reason)}<div class="muted">by ${esc(l.registered_by)}${l.approved_by?' · approved by '+esc(l.approved_by):''}</div></td><td>${buttons.join(' ')}</td></tr>`;
+  }).join('');
+}
+async function load(){
+  const data=await api('/api/interlocks');
+  host.innerHTML=Object.entries(data).filter(([id])=>id!=='signal_handoffs').map(([id,item])=>{
+    const checks=DEVICES.map(([value,label])=>`<label style="display:inline-flex;align-items:center;gap:4px;margin-right:8px"><input type="checkbox" style="width:auto;min-height:0" data-device="${value}" checked>${label}</label>`).join('');
+    return `<section class="panel wide"><h2>${id}</h2>
+      <table><tr><th>Emergency</th><td>${item.emergency.status}</td></tr><tr><th>Level</th><td>${(item.equipment.LevelM??item.equipment.level_m??0).toFixed(2)} m</td></tr><tr><th>Pending commands</th><td>${item.pending_commands.length}</td></tr></table>
+      <h2 style="margin-top:16px">Maintenance lockouts</h2>
+      <form data-register="${id}"><div style="margin-bottom:8px">${checks}</div>
+        <div class="form-row"><input data-reason placeholder="Maintenance reason (required)"><input data-name placeholder="Your name (required)"><button type="submit">Register lockout</button></div></form>
+      <table><thead><tr><th>Status</th><th>Devices</th><th>Reason</th><th>Actions</th></tr></thead><tbody>${lockoutRow(id,item)||'<tr><td colspan="4" class="muted">No active lockouts</td></tr>'}</tbody></table>
+      <div style="margin-top:12px"><button class="danger" data-stop="${id}">Emergency stop</button></div></section>`;
+  }).join('');
+  host.querySelectorAll('form[data-register]').forEach((form)=>form.addEventListener('submit',(e)=>{e.preventDefault();register(form.dataset.register,form,form.querySelector('button'));}));
+  host.querySelectorAll('[data-stop]').forEach((b)=>b.addEventListener('click',()=>stop(b.dataset.stop,b)));
+  host.querySelectorAll('[data-approve]').forEach((b)=>b.addEventListener('click',()=>act(idFrom(b,'approve'),b.dataset.approve,'approve',{approved_by:promptName()},b)));
+  host.querySelectorAll('[data-reject]').forEach((b)=>b.addEventListener('click',()=>act(idFrom(b,'reject'),b.dataset.reject,'reject',{rejected_by:promptName(),note:promptNote()},b)));
+  host.querySelectorAll('[data-release-request]').forEach((b)=>b.addEventListener('click',()=>act(idFrom(b,'release-request'),b.dataset.releaseRequest,'release-request',{note:promptNote()},b)));
+  host.querySelectorAll('[data-release]').forEach((b)=>b.addEventListener('click',()=>act(idFrom(b,'release'),b.dataset.release,'release',{released_by:promptName(),note:promptNote()},b)));
+  setMessage(message,'');
+}
+function idFrom(button,attr){return button.closest('section').querySelector('form[data-register]').dataset.register;}
+function promptName(){const v=prompt('Approver / releasing authority name');return (v||'').trim()||'operator';}
+function promptNote(){const v=prompt('Note for the release record (optional)');return (v||'').trim();}
 load().catch((e)=>setMessage(message,e.message));
 </script></body></html>

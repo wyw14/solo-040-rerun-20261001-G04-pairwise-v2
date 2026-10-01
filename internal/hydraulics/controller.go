@@ -11,6 +11,11 @@ import (
 	"github.com/wyw14/cry-96/internal/model"
 )
 
+// CommandGuard refuses command issue while maintenance lockouts cover a device.
+type CommandGuard interface {
+	Guard(ctx context.Context, chamberID string, device model.DeviceKind, action string, issue func(context.Context) error) error
+}
+
 // Controller coordinates valve commands, level windows and ramp operations.
 type Controller struct {
 	mu       sync.RWMutex
@@ -18,16 +23,17 @@ type Controller struct {
 	recorder *journal.Recorder
 	windows  map[string]*LevelWindow
 	ramp     *Ramp
+	guard    CommandGuard
 	now      func() time.Time
 }
 
-func NewController(commands *gate.Commands, recorder *journal.Recorder, ramp *Ramp, now func() time.Time) *Controller {
+func NewController(commands *gate.Commands, recorder *journal.Recorder, ramp *Ramp, guard CommandGuard, now func() time.Time) *Controller {
 	if now == nil {
 		now = time.Now
 	}
 	return &Controller{
 		commands: commands, recorder: recorder, windows: make(map[string]*LevelWindow),
-		ramp: ramp, now: now,
+		ramp: ramp, guard: guard, now: now,
 	}
 }
 
@@ -84,12 +90,19 @@ func (c *Controller) IssueValve(ctx context.Context, cycle model.TransitCycle, t
 		device = model.DeviceDrainValve
 		target = -target
 	}
-	command, err := c.commands.Issue(cycle, device, "set_opening", target, c.now())
-	if err != nil {
+	finalTarget := target
+	issue := func(ctx context.Context) error {
+		command, err := c.commands.Issue(cycle, device, "set_opening", finalTarget, c.now())
+		if err != nil {
+			return err
+		}
+		_, err = c.recorder.Record(ctx, cycle.ChamberID, model.EventCommandQueued, cycle.ID, cycle.Generation, command)
 		return err
 	}
-	_, err = c.recorder.Record(ctx, cycle.ChamberID, model.EventCommandQueued, cycle.ID, cycle.Generation, command)
-	return err
+	if c.guard == nil {
+		return issue(ctx)
+	}
+	return c.guard.Guard(ctx, cycle.ChamberID, device, "set_opening", issue)
 }
 
 func (c *Controller) RampTo(ctx context.Context, cycle model.TransitCycle, targets []float64) (RampResult, error) {
